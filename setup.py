@@ -20,7 +20,7 @@ setup(
     name="cfn_mod",
     version="0.1.2",
     description="CloudFormation Modules Helper",
-    url="http://github.com/storborg/funniest",
+    url="https://github.com/PresidioManagedCloudServices/cfn-mod",
     author="Jeremy Axmacher",
     author_email="jaxmacher@presidio.com",
     license="MIT",
