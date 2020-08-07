@@ -7,6 +7,9 @@ verify_ssl = true
 python_version = "3.6"
 
 [packages]
+click = "*"
+boto3 = "*"
+pyyaml = "*"
 
 [dev-packages]
 black = "==19.3b0"
