@@ -18,7 +18,7 @@ with open("Pipfile.lock") as fd:
 
 setup(
     name="cfn-mod",
-    version="0.1.3",
+    version="0.1.7",
     description="CloudFormation Modules Helper",
     url="https://github.com/PresidioManagedCloudServices/cfn-mod",
     author="Jeremy Axmacher",

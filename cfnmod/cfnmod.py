@@ -7,25 +7,12 @@ import os
 import stat
 import sys
 import zipfile
+from pathlib import Path
 
 # from invoke import run
 import boto3
 import click
 import yaml
-
-ARTIFACT_BUCKET = os.environ["ARTIFACT_BUCKET"]
-
-# load configuration
-with open("module.yml", "r") as f:
-    conf = yaml.load(f, Loader=yaml.FullLoader)
-
-module_name = conf["module"]["name"]
-now = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-build_number = os.environ.get(
-    conf["module"]["build_number_environment_variable"], f"dev{now}"
-)
-version = f'{conf["module"]["version"]}.{build_number}'
-entrypoint = conf["module"]["entrypoint"]
 
 
 @click.group()
@@ -71,12 +58,10 @@ def calc_md5(md5_files):
     return md5hash.hexdigest()
 
 
-def get_latest_details(module_name):
+def get_latest_details(bucket, module_name):
     s3 = boto3.client("s3")
     try:
-        response = s3.get_object(
-            Bucket=ARTIFACT_BUCKET, Key=f"modules/{module_name}-latest.yml"
-        )
+        response = s3.get_object(Bucket=bucket, Key=f"modules/{module_name}-latest.yml")
         latest = yaml.load(response["Body"], Loader=yaml.FullLoader)
         return latest["version"], latest["md5sum"]
     except Exception as exc:
@@ -89,7 +74,7 @@ def get_latest_details(module_name):
 def collect_files(artifacts):
     md5 = {}
     full = {}
-    for artifact_item in conf["module"]["artifacts"]:
+    for artifact_item in artifacts:
         folder = artifact_item.get("folder", ".")
         with pushd(folder):
             for pattern in artifact_item.get("pattern", ["*"]):
@@ -107,9 +92,78 @@ def collect_files(artifacts):
     return sorted(full.items()), sorted(md5.items())
 
 
+def install_module(folder, bucket, module_name, version=None):
+    if version is None or version == "latest":
+        version, _ = get_latest_details(bucket, module_name)
+    if version is None:
+        version = "latest"
+        click.echo(
+            f"Module {module_name}=={version} does not exist in bucket {bucket}. Skipping."
+        )
+        return
+    key = (
+        f"modules/dev/{module_name}-{version}.zip"
+        if "dev" in version
+        else f"modules/{module_name}-{version}.zip"
+    )
+    try:
+        s3 = boto3.client("s3")
+        response = s3.get_object(Bucket=bucket, Key=key)
+    except Exception:
+        click.echo(
+            f"Error downloading module {module_name}=={version} from bucket {bucket}. Skipping."
+        )
+        raise
+        return
+    try:
+        path = Path(".") / folder / module_name
+        os.makedirs(path)
+        zip_file = zipfile.ZipFile(io.BytesIO(response["Body"].read()))
+        zip_file.extractall(path)
+    except Exception:
+        raise
+
+
 @cli.command()
-def publish():
-    latest_version, latest_md5sum = get_latest_details(module_name)
+@click.option("--bucket", "-b", required=True)
+@click.option("--modules-file", "-f", type=click.File("r"))
+@click.option("--module", "-m")
+def install(bucket, modules_file, module):
+    if not module and not modules_file:
+        click.echo("No module or modules file supplied. Exiting without action.")
+        sys.exit(1)
+    if module and modules_file:
+        click.echo(
+            "Both module and modules file supplied. Unsupported option combination. Exiting without action."
+        )
+        sys.exit(1)
+    if modules_file:
+        for mod in modules_file:
+            mod = mod.strip()
+            if "==" in mod:
+                module_name, version = mod.split("==")
+                install_module("modules", bucket, module_name, version)
+            else:
+                install_module("modules", bucket, mod)
+    else:
+        print("no mod")
+
+
+@cli.command()
+@click.option("--bucket", "-b", required=True)
+def publish(bucket):
+    # load configuration
+    with open("module.yml", "r") as f:
+        conf = yaml.load(f, Loader=yaml.FullLoader)
+    module_name = conf["module"]["name"]
+    now = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    build_number = os.environ.get(
+        conf["module"]["build_number_environment_variable"], f"dev{now}"
+    )
+    version = f'{conf["module"]["version"]}.{build_number}'
+    # entrypoint = conf["module"]["entrypoint"]
+    # Check published version
+    latest_version, latest_md5sum = get_latest_details(bucket, module_name)
     all_files, md5_files = collect_files(conf["module"]["artifacts"])
     print("# Calculating md5 sum")
     new_md5sum = calc_md5(md5_files)
@@ -134,16 +188,14 @@ def publish():
     artifact_zip = create_zip(all_files)
     s3 = boto3.client("s3")
     print("# Writing artifact")
-    s3.put_object(Body=artifact_zip.getvalue(), Bucket=ARTIFACT_BUCKET, Key=key)
-    print(f"# Artifact written to s3://{ARTIFACT_BUCKET}/{key}")
+    s3.put_object(Body=artifact_zip.getvalue(), Bucket=bucket, Key=key)
+    print(f"# Artifact written to s3://{bucket}/{key}")
     if "dev" not in version:
         print("# Updating {module_name} module latest details")
         latest = {"version": version, "md5sum": new_md5sum}
         key = f"modules/{module_name}-latest.yml"
-        s3.put_object(
-            Body=yaml.dump(latest).encode("utf-8"), Bucket=ARTIFACT_BUCKET, Key=key
-        )
+        s3.put_object(Body=yaml.dump(latest).encode("utf-8"), Bucket=bucket, Key=key)
 
 
 if __name__ == "__main__":
-    cli()
+    cli(auto_envvar_prefix="CFN_MOD")
