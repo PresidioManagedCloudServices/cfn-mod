@@ -17,8 +17,8 @@ with open("Pipfile.lock") as fd:
     ]
 
 setup(
-    name="cfn_mod",
-    version="0.1.2",
+    name="cfn-mod",
+    version="0.1.3",
     description="CloudFormation Modules Helper",
     url="https://github.com/PresidioManagedCloudServices/cfn-mod",
     author="Jeremy Axmacher",
@@ -28,5 +28,5 @@ setup(
     zip_safe=False,
     install_requires=install_requires,
     tests_require=tests_require,
-    entry_points={"console_scripts": ["cfn-mod=cfn_mod.command_line:main"]},
+    entry_points={"console_scripts": ["cfn-mod=cfn_mod.__main__:main"]},
 )
