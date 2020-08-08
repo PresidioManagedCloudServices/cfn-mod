@@ -1,4 +1,4 @@
-from cfn_mod.cfn_mod import cli
+from cfnmod.cfnmod import cli
 
 
 def main():

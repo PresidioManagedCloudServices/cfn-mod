@@ -24,9 +24,9 @@ setup(
     author="Jeremy Axmacher",
     author_email="jaxmacher@presidio.com",
     license="MIT",
-    packages=["cfn_mod"],
+    packages=["cfnmod"],
     zip_safe=False,
     install_requires=install_requires,
     tests_require=tests_require,
-    entry_points={"console_scripts": ["cfn-mod=cfn_mod.__main__:main"]},
+    entry_points={"console_scripts": ["cfn-mod=cfnmod.__main__:main"]},
 )
