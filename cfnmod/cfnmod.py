@@ -4,13 +4,14 @@ import glob
 import hashlib
 import io
 import os
+import shutil
 import stat
 import sys
 import zipfile
 from pathlib import Path
 
-# from invoke import run
 import boto3
+import botocore.exceptions
 import click
 import yaml
 
@@ -31,7 +32,7 @@ def pushd(new_dir):
 
 
 def add_file(zip_file, path):
-    print(f"Adding path = {path}")
+    click.echo(f"Adding path = {path}")
     permission = 0o555 if os.access(path, os.X_OK) else 0o444
     zip_info = zipfile.ZipInfo.from_file(path)
     zip_info.date_time = (2020, 1, 1, 0, 0, 0)
@@ -58,17 +59,36 @@ def calc_md5(md5_files):
     return md5hash.hexdigest()
 
 
-def get_latest_details(bucket, module_name):
+def get_object(bucket, key):
     s3 = boto3.client("s3")
     try:
-        response = s3.get_object(Bucket=bucket, Key=f"modules/{module_name}-latest.yml")
-        latest = yaml.load(response["Body"], Loader=yaml.FullLoader)
-        return latest["version"], latest["md5sum"]
+        response = s3.get_object(Bucket=bucket, Key=key)
+        return response
+    except botocore.exceptions.NoCredentialsError:
+        click.echo("AWS credentials not configured. Quitting.")
+        sys.exit(1)
     except Exception as exc:
-        if exc.response.get("Error", {}).get("Code"):
-            return None, None
+        if (
+            hasattr(exc, "response")
+            and exc.response.get("Error", {}).get("Code") == "NoSuchKey"
+        ):
+            return None
+        elif hasattr(exc, "response") and exc.response.get("Error", {}).get("Code"):
+            err = exc.response.get("Error", {}).get("Code")
+            click.echo(f"Error {err}. Quitting.")
+            sys.exit(1)
         else:
             raise
+
+
+def get_latest_details(bucket, module_name):
+    key = f"modules/{module_name}-latest.yml"
+    response = get_object(bucket, key)
+    if response is None:
+        return None, None
+    else:
+        latest = yaml.load(response["Body"], Loader=yaml.FullLoader)
+        return latest["version"], latest["md5sum"]
 
 
 def collect_files(artifacts):
@@ -79,13 +99,13 @@ def collect_files(artifacts):
         with pushd(folder):
             for pattern in artifact_item.get("pattern", ["*"]):
                 recursive = artifact_item.get("recursive", False)
-                print(
+                click.echo(
                     f"Collecting Folder = {folder}, Pattern = {pattern}, Recursive = {recursive}"
                 )
                 files = sorted(glob.glob(pattern, recursive=recursive))
                 full.setdefault(folder, []).extend(files)
                 if artifact_item.get("include_in_md5", False):
-                    print("Including in md5sum-able artifacts")
+                    click.echo("Including in md5sum-able artifacts")
                     md5.setdefault(folder, []).extend(files)
         full[folder] = sorted(list(set(full.get(folder, []))))
         md5[folder] = sorted(list(set(md5.get(folder, []))))
@@ -93,6 +113,14 @@ def collect_files(artifacts):
 
 
 def install_module(folder, bucket, module_name, version=None):
+    path = Path(".") / folder / module_name
+    try:
+        if os.path.exists(path):
+            click.echo(f"... Folder {path} already exists. Removing.")
+            shutil.rmtree(path)
+    except Exception:
+        click.echo("Error occurred removing folder. Quitting.")
+        sys.exit(1)
     if version is None or version == "latest":
         version, _ = get_latest_details(bucket, module_name)
     if version is None:
@@ -106,22 +134,24 @@ def install_module(folder, bucket, module_name, version=None):
         if "dev" in version
         else f"modules/{module_name}-{version}.zip"
     )
-    try:
-        s3 = boto3.client("s3")
-        response = s3.get_object(Bucket=bucket, Key=key)
-    except Exception:
+    click.echo(f"Downloading s3://{bucket}/{key}")
+    response = get_object(bucket, key)
+    if response is None:
         click.echo(
-            f"Error downloading module {module_name}=={version} from bucket {bucket}. Skipping."
+            f"... Module {module_name}=={version} not found in bucket {bucket}. Skipping."
         )
-        raise
         return
-    try:
-        path = Path(".") / folder / module_name
-        os.makedirs(path)
-        zip_file = zipfile.ZipFile(io.BytesIO(response["Body"].read()))
-        zip_file.extractall(path)
-    except Exception:
-        raise
+    else:
+        try:
+            click.echo(f"Creating folder {path} for module {module_name}")
+            os.makedirs(path)
+            zip_file = zipfile.ZipFile(io.BytesIO(response["Body"].read()))
+            click.echo("Unzipping module")
+            zip_file.extractall(path)
+        except Exception as exc:
+            click.echo(f"... Error occurred creating folder or unzipping: {exc}")
+            click.echo("Quitting.")
+            sys.exit(1)
 
 
 @cli.command()
@@ -142,11 +172,18 @@ def install(bucket, modules_file, module):
             mod = mod.strip()
             if "==" in mod:
                 module_name, version = mod.split("==")
+                click.echo(f"Installing module {module_name}=={version}")
                 install_module("modules", bucket, module_name, version)
             else:
+                click.echo(f"Installing module {mod}")
                 install_module("modules", bucket, mod)
+    elif "==" in module:
+        module_name, version = module.split("==")
+        click.echo(f"Installing module {module_name}=={version}")
+        install_module("modules", bucket, module_name, version)
     else:
-        print("no mod")
+        click.echo(f"Installing module {module}")
+        install_module("modules", bucket, module)
 
 
 @cli.command()
@@ -165,33 +202,35 @@ def publish(bucket):
     # Check published version
     latest_version, latest_md5sum = get_latest_details(bucket, module_name)
     all_files, md5_files = collect_files(conf["module"]["artifacts"])
-    print("# Calculating md5 sum")
+    click.echo("# Calculating md5 sum")
     new_md5sum = calc_md5(md5_files)
     if version == latest_version and new_md5sum == latest_md5sum:
-        print(f"Version {version} and md5 sum {latest_md5sum} MATCH. Quitting.")
+        click.echo(f"Version {version} and md5 sum {latest_md5sum} MATCH. Quitting.")
         sys.exit(0)
     elif version == latest_version and new_md5sum != latest_md5sum:
-        print(
+        click.echo(
             f"Building version {version}, but version matches latest published"
             " and the md5 sums DO NOT match.  Quitting."
         )
         sys.exit(1)
     elif new_md5sum == latest_md5sum:
-        print(f"Artifacts match existing latest version {latest_version}. Quitting.")
+        click.echo(
+            f"Artifacts match existing latest version {latest_version}. Quitting."
+        )
         sys.exit(0)
     key = (
         f"modules/dev/{module_name}-{version}.zip"
         if "dev" in version
         else f"modules/{module_name}-{version}.zip"
     )
-    print("# Creating zip file")
+    click.echo("# Creating zip file")
     artifact_zip = create_zip(all_files)
     s3 = boto3.client("s3")
-    print("# Writing artifact")
+    click.echo("# Writing artifact")
     s3.put_object(Body=artifact_zip.getvalue(), Bucket=bucket, Key=key)
-    print(f"# Artifact written to s3://{bucket}/{key}")
+    click.echo(f"# Artifact written to s3://{bucket}/{key}")
     if "dev" not in version:
-        print("# Updating {module_name} module latest details")
+        click.echo("# Updating {module_name} module latest details")
         latest = {"version": version, "md5sum": new_md5sum}
         key = f"modules/{module_name}-latest.yml"
         s3.put_object(Body=yaml.dump(latest).encode("utf-8"), Bucket=bucket, Key=key)
