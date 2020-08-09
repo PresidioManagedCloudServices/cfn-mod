@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -31,24 +32,38 @@ def pushd(new_dir):
         os.chdir(previous_dir)
 
 
-def add_file(zip_file, path):
+def add_file(zip_file, path, in_zip_path):
     click.echo(f"Adding path = {path}")
     permission = 0o555 if os.access(path, os.X_OK) else 0o444
-    zip_info = zipfile.ZipInfo.from_file(path)
+    zip_info = zipfile.ZipInfo.from_file(in_zip_path)
     zip_info.date_time = (2020, 1, 1, 0, 0, 0)
     zip_info.external_attr = (stat.S_IFREG | permission) << 16
     with open(path, "rb") as fp:
         zip_file.writestr(zip_info, fp.read())
 
 
-def create_zip(files):
+def generate_versioned_conf(folder, path, version):
+    path = Path(folder) / path
+    with open(path, "r") as f:
+        conf = yaml.load(f, Loader=yaml.FullLoader)
+    conf["module"]["version"] = version
+    f = tempfile.NamedTemporaryFile(mode="w", delete=False)
+    yaml.dump(conf, f)
+    return f.name
+
+
+def create_zip(files, version=None):
     zip_bytes = io.BytesIO()
     with zipfile.ZipFile(zip_bytes, "w") as zip_file:
         for folder, files in files:
             with pushd(folder):
                 for path in files:
-                    if os.path.isfile(path):
-                        add_file(zip_file, path)
+                    if version is not None and folder == "." and path == "module.yml":
+                        new_module_path = generate_versioned_conf(folder, path, version)
+                        add_file(zip_file, new_module_path, path)
+                        os.unlink(new_module_path)
+                    elif os.path.isfile(path):
+                        add_file(zip_file, path, path)
         zip_bytes.seek(0)
         return zip_bytes
 
@@ -155,9 +170,30 @@ def install_module(folder, bucket, module_name, version=None):
 
 
 @cli.command()
+def freeze():
+    path = Path("modules")
+    for entry in os.listdir(path):
+        if os.path.isdir(path / entry):
+            module_conf_file = path / entry / "module.yml"
+            if not os.path.exists(module_conf_file) or not os.path.isfile(
+                module_conf_file
+            ):
+                click.echo(
+                    f"Folder {entry} in modules folder does not have module.yml.  Skipping.",
+                    err=True,
+                )
+                continue
+            with open(module_conf_file, "r") as f:
+                conf = yaml.load(f, Loader=yaml.FullLoader)
+            module_name = conf["module"]["name"]
+            version = conf["module"]["version"]
+            click.echo(f"{module_name}=={version}")
+
+
+@cli.command()
 @click.option("--bucket", "-b", required=True)
 @click.option("--modules-file", "-f", type=click.File("r"))
-@click.option("--module", "-m")
+@click.argument("module", nargs=-1)
 def install(bucket, modules_file, module):
     if not module and not modules_file:
         click.echo("No module or modules file supplied. Exiting without action.")
@@ -167,23 +203,16 @@ def install(bucket, modules_file, module):
             "Both module and modules file supplied. Unsupported option combination. Exiting without action."
         )
         sys.exit(1)
-    if modules_file:
-        for mod in modules_file:
-            mod = mod.strip()
-            if "==" in mod:
-                module_name, version = mod.split("==")
-                click.echo(f"Installing module {module_name}=={version}")
-                install_module("modules", bucket, module_name, version)
-            else:
-                click.echo(f"Installing module {mod}")
-                install_module("modules", bucket, mod)
-    elif "==" in module:
-        module_name, version = module.split("==")
-        click.echo(f"Installing module {module_name}=={version}")
-        install_module("modules", bucket, module_name, version)
-    else:
-        click.echo(f"Installing module {module}")
-        install_module("modules", bucket, module)
+    mod_iter = module if module else modules_file
+    for mod in mod_iter:
+        mod = mod.strip()
+        if "==" in mod:
+            module_name, version = mod.split("==")
+            click.echo(f"Installing module {module_name}=={version}")
+            install_module("modules", bucket, module_name, version)
+        else:
+            click.echo(f"Installing module {mod}")
+            install_module("modules", bucket, mod)
 
 
 @cli.command()
@@ -224,13 +253,13 @@ def publish(bucket):
         else f"modules/{module_name}-{version}.zip"
     )
     click.echo("# Creating zip file")
-    artifact_zip = create_zip(all_files)
+    artifact_zip = create_zip(all_files, version)
     s3 = boto3.client("s3")
     click.echo("# Writing artifact")
     s3.put_object(Body=artifact_zip.getvalue(), Bucket=bucket, Key=key)
     click.echo(f"# Artifact written to s3://{bucket}/{key}")
     if "dev" not in version:
-        click.echo("# Updating {module_name} module latest details")
+        click.echo(f"# Updating {module_name} module latest details")
         latest = {"version": version, "md5sum": new_md5sum}
         key = f"modules/{module_name}-latest.yml"
         s3.put_object(Body=yaml.dump(latest).encode("utf-8"), Bucket=bucket, Key=key)
