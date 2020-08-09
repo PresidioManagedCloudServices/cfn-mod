@@ -163,6 +163,7 @@ def install_module(folder, bucket, module_name, version=None):
             zip_file = zipfile.ZipFile(io.BytesIO(response["Body"].read()))
             click.echo("Unzipping module")
             zip_file.extractall(path)
+            return version
         except Exception as exc:
             click.echo(f"... Error occurred creating folder or unzipping: {exc}")
             click.echo("Quitting.")
@@ -188,6 +189,31 @@ def freeze():
             module_name = conf["module"]["name"]
             version = conf["module"]["version"]
             click.echo(f"{module_name}=={version}")
+
+
+@cli.command()
+@click.option("--bucket", "-b", required=True)
+@click.option("--template", "-t", required=True)
+@click.argument("module", nargs=-1)
+def add(bucket, template, module):
+    if not module:
+        click.echo("No module supplied. Exiting without action.")
+        sys.exit(1)
+    installed = []
+    for mod in module:
+        mod = mod.strip()
+        if "==" in mod:
+            module_name, version = mod.split("==")
+            click.echo(f"Installing module {module_name}=={version}")
+            installed_ver = install_module("modules", bucket, module_name, version)
+        else:
+            click.echo(f"Installing module {mod}")
+            installed_ver = install_module("modules", bucket, mod)
+        if installed_ver is not None:
+            installed.append(mod)
+    for mod in installed:
+        click.echo(f"Adding module {mod} to temlate file {template} as nested stack.")
+        resource_id = click.prompt("Enter logical resource id")
 
 
 @cli.command()
