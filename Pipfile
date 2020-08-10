@@ -10,6 +10,7 @@ python_version = "3.6"
 click = "*"
 boto3 = "*"
 pyyaml = "*"
+"ruamel.yaml" = "*"
 
 [dev-packages]
 black = "==19.3b0"

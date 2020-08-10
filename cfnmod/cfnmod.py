@@ -15,6 +15,8 @@ import boto3
 import botocore.exceptions
 import click
 import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 
 
 @click.group()
@@ -170,6 +172,82 @@ def install_module(folder, bucket, module_name, version=None):
             sys.exit(1)
 
 
+def generate_parameter_data(
+    resource_id, source_template, source_template_path, target_template
+):
+    yaml = YAML()
+    with open(target_template, "r") as f:
+        target_doc = yaml.load(f.read())
+    target_doc.setdefault("Resources", CommentedMap())
+    target_doc["Resources"][resource_id] = CommentedMap()
+    target_doc["Resources"][resource_id]["Type"] = "AWS::CloudFormation::Stack"
+    target_doc["Resources"][resource_id]["Properties"] = CommentedMap()
+    target_doc["Resources"][resource_id]["Properties"][
+        "TemplateURL"
+    ] = source_template_path
+    target_doc["Resources"][resource_id]["Properties"]["Parameters"] = CommentedMap()
+    params = target_doc["Resources"][resource_id]["Properties"]["Parameters"]
+    with open(source_template, "r") as f:
+        source_doc = yaml.load(f.read())
+    interface = source_doc.get("Metadata", {}).get("AWS::CloudFormation::Interface", {})
+    parameter_groups = interface.get("ParameterGroups", [])
+    parameter_labels = interface.get("ParameterLabels", {})
+    parameters = source_doc.get("Parameters", {})
+    comments = []
+    before = None
+    for group in parameter_groups:
+        label = group.get("Label", {}).get("default", "Undefined Group Name")
+        group_name = f"#### {label} ####"
+        box = "#" * len(group_name)
+        comments.extend([box, group_name, box])
+        for parameter in group.get("Parameters", []):
+            if parameter in parameters:
+                parameter_label = parameter_labels.get(parameter, {}).get(
+                    "default", parameter
+                )
+                parameter_type = parameters[parameter].get("Type", "Unspecified Type")
+                parameter_description = parameters[parameter].get(
+                    "Description", "Unspecified Description"
+                )
+                comments.append(f"## {parameter_label} ({parameter_type}) ##")
+                comments.append(f"##     {parameter_description}")
+                if before is None:
+                    params.yaml_set_start_comment("\n".join(comments), indent=8)
+                else:
+                    params.yaml_set_comment_before_after_key(
+                        parameter, "\n".join(comments), after=before, indent=8
+                    )
+                before = parameter
+                params[parameter] = ""
+                comments = []
+                del parameters[parameter]
+    if parameters:
+        comments = []
+        comments.append("##############################")
+        comments.append("#### Ungrouped Parameters ####")
+        comments.append("##############################")
+    for parameter in parameters.keys():
+        parameter_label = parameter_labels.get(parameter, {}).get("default", parameter)
+        parameter_type = parameters[parameter].get("Type", "Unspecified Type")
+        parameter_description = parameters[parameter].get(
+            "Description", "Unspecified Description"
+        )
+        comments.append(f"## {parameter_label} ({parameter_type}) ##")
+        comments.append(f"##     {parameter_description}")
+        if before is None:
+            params.yaml_set_start_comment("\n".join(comments), indent=8)
+        else:
+            params.yaml_set_comment_before_after_key(
+                parameter, "\n".join(comments), after=before, indent=8
+            )
+        before = parameter
+        params[parameter] = ""
+        comments = []
+    with open("/tmp/x.yml", "w") as f:
+        yaml.dump(target_doc, f)
+    return source_doc
+
+
 @cli.command()
 def freeze():
     path = Path("modules")
@@ -214,6 +292,7 @@ def add(bucket, template, module):
     for mod in installed:
         click.echo(f"Adding module {mod} to temlate file {template} as nested stack.")
         resource_id = click.prompt("Enter logical resource id")
+        print(resource_id)
 
 
 @cli.command()
