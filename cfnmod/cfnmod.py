@@ -243,7 +243,7 @@ def generate_parameter_data(
         before = parameter
         params[parameter] = ""
         comments = []
-    with open("/tmp/x.yml", "w") as f:
+    with open(target_template, "w") as f:
         yaml.dump(target_doc, f)
     return source_doc
 
@@ -269,6 +269,14 @@ def freeze():
             click.echo(f"{module_name}=={version}")
 
 
+def get_mod_path(modules_path, module_name):
+    path = Path(modules_path) / module_name / "module.yml"
+    with open(path, "r") as f:
+        conf = yaml.load(f, Loader=yaml.FullLoader)
+    entrypoint = conf["module"]["entrypoint"]
+    return Path(modules_path) / module_name / entrypoint, entrypoint
+
+
 @cli.command()
 @click.option("--bucket", "-b", required=True)
 @click.option("--template", "-t", required=True)
@@ -292,7 +300,11 @@ def add(bucket, template, module):
     for mod in installed:
         click.echo(f"Adding module {mod} to temlate file {template} as nested stack.")
         resource_id = click.prompt("Enter logical resource id")
-        print(resource_id)
+        mod_template_path, entrypoint = get_mod_path("modules", mod)
+        click.echo(f"Adding resource {resource_id} to {template}")
+        generate_parameter_data(
+            resource_id, mod_template_path, f"./modules/{mod}/{entrypoint}", template
+        )
 
 
 @cli.command()
