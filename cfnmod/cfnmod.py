@@ -12,11 +12,15 @@ import zipfile
 from pathlib import Path
 
 import boto3
+import botocore
 import botocore.exceptions
 import click
 import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+
+# Create a config
+session_config = botocore.config.Config(user_agent="cfn-mod/cli")
 
 
 @click.group()
@@ -77,7 +81,7 @@ def calc_md5(md5_files):
 
 
 def get_object(bucket, key):
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", config=session_config)
     try:
         response = s3.get_object(Bucket=bucket, Key=key)
         return response
@@ -99,7 +103,7 @@ def get_object(bucket, key):
 
 
 def get_latest_details(bucket, module_name):
-    key = f"modules/{module_name}-latest.yml"
+    key = f"latest/{module_name}-latest.yml"
     response = get_object(bucket, key)
     if response is None:
         return None, None
@@ -371,14 +375,14 @@ def publish(bucket):
     )
     click.echo("# Creating zip file")
     artifact_zip = create_zip(all_files, version)
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", config=session_config)
     click.echo("# Writing artifact")
     s3.put_object(Body=artifact_zip.getvalue(), Bucket=bucket, Key=key)
     click.echo(f"# Artifact written to s3://{bucket}/{key}")
     if "dev" not in version:
         click.echo(f"# Updating {module_name} module latest details")
         latest = {"version": version, "md5sum": new_md5sum}
-        key = f"modules/{module_name}-latest.yml"
+        key = f"latest/{module_name}-latest.yml"
         s3.put_object(Body=yaml.dump(latest).encode("utf-8"), Bucket=bucket, Key=key)
 
 
