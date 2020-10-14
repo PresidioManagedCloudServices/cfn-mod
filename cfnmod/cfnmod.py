@@ -83,11 +83,19 @@ def calc_md5(md5_files):
 def get_object(bucket, key):
     s3 = boto3.client("s3", config=session_config)
     try:
-        response = s3.get_object(Bucket=bucket, Key=key)
-        return response
-    except botocore.exceptions.NoCredentialsError:
-        click.echo("AWS credentials not configured. Quitting.")
-        sys.exit(1)
+        try:
+            response = s3.get_object(Bucket=bucket, Key=key)
+            return response
+        except botocore.exceptions.NoCredentialsError:
+            s3 = boto3.client(
+                "s3",
+                config=session_config,
+                aws_access_key_id="",
+                aws_secret_access_key="",
+            )
+            s3._request_signer.sign = lambda *args, **kwargs: None
+            response = s3.get_object(Bucket=bucket, Key=key)
+            return response
     except Exception as exc:
         if (
             hasattr(exc, "response")
