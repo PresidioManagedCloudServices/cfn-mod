@@ -174,8 +174,8 @@ def install_module(folder, bucket, module_name, version=None):
         try:
             click.echo(f"Creating folder {path} for module {module_name}")
             os.makedirs(path)
-            zip_file = zipfile.ZipFile(io.BytesIO(response["Body"].read()))
             click.echo("Unzipping module")
+            zip_file = zipfile.ZipFile(io.BytesIO(response["Body"].read()))
             zip_file.extractall(path)
             return version
         except Exception as exc:
@@ -301,9 +301,9 @@ def add(bucket, template, module):
     for mod in module:
         mod = mod.strip()
         if "==" in mod:
-            module_name, version = mod.split("==")
-            click.echo(f"Installing module {module_name}=={version}")
-            installed_ver = install_module("modules", bucket, module_name, version)
+            mod, version = mod.split("==")
+            click.echo(f"Installing module {mod}=={version}")
+            installed_ver = install_module("modules", bucket, mod, version)
         else:
             click.echo(f"Installing module {mod}")
             installed_ver = install_module("modules", bucket, mod)
