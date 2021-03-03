@@ -90,6 +90,9 @@ def get_object(bucket, key):
             aws_secret_access_key="",
             aws_session_token=""
         )
+        s3._request_signer.sign = lambda *args, **kwargs: None
+        response = s3.get_object(Bucket=bucket, Key=key)
+        return response
     except Exception as exc:
         if (
             hasattr(exc, "response")
