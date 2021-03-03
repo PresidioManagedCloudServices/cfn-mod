@@ -17,7 +17,7 @@ import botocore.exceptions
 import click
 import yaml
 from ruamel.yaml import YAML
-from ruamel.yaml.comments import CommentedMap
+from ruamel.yaml.comments import CommentedMap, TaggedScalar, Tag
 
 # Create a config
 session_config = botocore.config.Config(user_agent="cfn-mod/cli")
@@ -83,19 +83,13 @@ def calc_md5(md5_files):
 def get_object(bucket, key):
     s3 = boto3.client("s3", config=session_config)
     try:
-        try:
-            response = s3.get_object(Bucket=bucket, Key=key)
-            return response
-        except botocore.exceptions.NoCredentialsError:
-            s3 = boto3.client(
-                "s3",
-                config=session_config,
-                aws_access_key_id="",
-                aws_secret_access_key="",
-            )
-            s3._request_signer.sign = lambda *args, **kwargs: None
-            response = s3.get_object(Bucket=bucket, Key=key)
-            return response
+        s3 = boto3.client(
+            "s3",
+            config=session_config,
+            aws_access_key_id="",
+            aws_secret_access_key="",
+            aws_session_token=""
+        )
     except Exception as exc:
         if (
             hasattr(exc, "response")
@@ -105,7 +99,7 @@ def get_object(bucket, key):
         elif hasattr(exc, "response") and exc.response.get("Error", {}).get("Code"):
             err = exc.response.get("Error", {}).get("Code")
             click.echo(f"Error {err}. Quitting.")
-            sys.exit(1)
+            raise
         else:
             raise
 
@@ -184,27 +178,34 @@ def install_module(folder, bucket, module_name, version=None):
             sys.exit(1)
 
 
-def generate_parameter_data(
-    resource_id, source_template, source_template_path, target_template
+def add_resource_and_outputs(
+    resource_id, module_doc, module_template_path, target_doc
 ):
-    yaml = YAML()
-    with open(target_template, "r") as f:
-        target_doc = yaml.load(f.read())
     target_doc.setdefault("Resources", CommentedMap())
+    target_doc.setdefault("Outputs", CommentedMap())
     target_doc["Resources"][resource_id] = CommentedMap()
     target_doc["Resources"][resource_id]["Type"] = "AWS::CloudFormation::Stack"
     target_doc["Resources"][resource_id]["Properties"] = CommentedMap()
     target_doc["Resources"][resource_id]["Properties"][
         "TemplateURL"
-    ] = source_template_path
+    ] = module_template_path
     target_doc["Resources"][resource_id]["Properties"]["Parameters"] = CommentedMap()
     params = target_doc["Resources"][resource_id]["Properties"]["Parameters"]
-    with open(source_template, "r") as f:
-        source_doc = yaml.load(f.read())
-    interface = source_doc.get("Metadata", {}).get("AWS::CloudFormation::Interface", {})
+    interface = module_doc.get("Metadata", {}).get("AWS::CloudFormation::Interface", {})
     parameter_groups = interface.get("ParameterGroups", [])
     parameter_labels = interface.get("ParameterLabels", {})
-    parameters = source_doc.get("Parameters", {})
+    parameters = module_doc.get("Parameters", {})
+    outputs = module_doc.get("Outputs", {})
+    for output_name, output_value in outputs.items():
+        if output_value.get('Export'):
+            del output_value['Export']
+        if output_value.get('Condition'):
+            del output_value['Condition']
+        target_doc["Outputs"][f'{resource_id}{output_name}'] = output_value
+        tag = Tag()
+        tag.value = '!GetAtt'
+        target_doc["Outputs"][f'{resource_id}{output_name}']['Value']._yaml_tag = tag
+        target_doc["Outputs"][f'{resource_id}{output_name}']['Value'].value = f'{resource_id}.Outputs.{output_name}'
     comments = []
     before = None
     for group in parameter_groups:
@@ -255,9 +256,7 @@ def generate_parameter_data(
         before = parameter
         params[parameter] = ""
         comments = []
-    with open(target_template, "w") as f:
-        yaml.dump(target_doc, f)
-    return source_doc
+    return target_doc
 
 
 @cli.command()
@@ -289,6 +288,28 @@ def get_mod_path(modules_path, module_name):
     return Path(modules_path) / module_name / entrypoint, entrypoint
 
 
+def write_document(template, document):
+    yaml = YAML()
+    with open(template, "w") as f:
+        yaml.dump(document, f)
+
+
+def load_document(template, ignore_empty=False):
+    yaml = YAML()
+    try:
+        with open(template, "r") as f:
+            document = yaml.load(f.read())
+    except FileNotFoundError:
+        if ignore_empty:
+            return {}
+        else:
+            raise
+    if not document:
+        return {}
+    else:
+        return document
+
+
 @cli.command()
 @click.option("--bucket", "-b", required=True)
 @click.option("--template", "-t", required=True)
@@ -314,9 +335,12 @@ def add(bucket, template, module):
         resource_id = click.prompt("Enter logical resource id")
         mod_template_path, entrypoint = get_mod_path("modules", mod)
         click.echo(f"Adding resource {resource_id} to {template}")
-        generate_parameter_data(
-            resource_id, mod_template_path, f"./modules/{mod}/{entrypoint}", template
+        target_doc = load_document(template, ignore_empty=True)
+        module_doc = load_document(mod_template_path)
+        target_doc = add_resource_and_outputs(
+            resource_id, module_doc, f"./modules/{mod}/{entrypoint}", target_doc
         )
+        write_document(template, target_doc)
 
 
 @cli.command()
