@@ -3,6 +3,7 @@ import datetime
 import glob
 import hashlib
 import io
+import json
 import os
 import shutil
 import stat
@@ -226,7 +227,11 @@ def add_resource_and_outputs(
                     "Description", "Unspecified Description"
                 )
                 comments.append(f"## {parameter_label} ({parameter_type}) ##")
-                comments.append(f"##     {parameter_description}")
+                comments.append(f"##     Description: {parameter_description}")
+                for constraint in ['AllowedPattern', 'AllowedValues', 'ConstraintDescription', 'MaxLength', 'MaxValue', 'MinLength', 'MinValue']:
+                    if parameters[parameter].get(constraint):
+                        value = json.dumps(parameters[parameter][constraint])
+                        comments.append(f"##     {constraint}: {value}")
                 if before is None:
                     params.yaml_set_start_comment("\n".join(comments), indent=8)
                 else:
@@ -234,7 +239,7 @@ def add_resource_and_outputs(
                         parameter, "\n".join(comments), after=before, indent=8
                     )
                 before = parameter
-                params[parameter] = ""
+                params[parameter] = parameters[parameter].get("Default", None)
                 comments = []
                 del parameters[parameter]
     if parameters:
@@ -250,6 +255,10 @@ def add_resource_and_outputs(
         )
         comments.append(f"## {parameter_label} ({parameter_type}) ##")
         comments.append(f"##     {parameter_description}")
+        for constraint in ['AllowedPattern', 'AllowedValues', 'ConstraintDescription', 'MaxLength', 'MaxValue', 'MinLength', 'MinValue']:
+            if parameters[parameter].get(constraint):
+                value = json.dumps(parameters[parameter][constraint])
+                comments.append(f"##     {constraint}: {value}")
         if before is None:
             params.yaml_set_start_comment("\n".join(comments), indent=8)
         else:
@@ -257,7 +266,7 @@ def add_resource_and_outputs(
                 parameter, "\n".join(comments), after=before, indent=8
             )
         before = parameter
-        params[parameter] = ""
+        params[parameter] = parameters[parameter].get("Default", None)
         comments = []
     return target_doc
 
